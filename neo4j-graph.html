@@ -1,0 +1,1560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Neo4j Graph Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script src="https://unpkg.com/neo4j-driver@5.19.0/lib/browser/neo4j-web.min.js"></script>
+<style>
+/* ── RESET & BASE ─────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; overflow: hidden; height: 100vh; }
+button { font-family: inherit; cursor: pointer; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+/* ── LAYOUT ───────────────────────────────── */
+#app { display: flex; flex-direction: column; height: 100vh; }
+#top-area { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+#bottom-pane { display: flex; height: 210px; min-height: 90px; flex-shrink: 0; overflow: hidden; background: #161b22; border-top: 1px solid #21262d; }
+
+/* Panes */
+#left-pane   { width: 290px; min-width: 180px; background: #161b22; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; flex-shrink: 0; }
+#center-pane { flex: 1; min-width: 200px; background: #0d1117; position: relative; overflow: hidden; }
+#right-pane  { width: 210px; min-width: 150px; background: #161b22; overflow-y: auto; overflow-x: hidden; flex-shrink: 0; }
+#query-area  { width: 360px; min-width: 220px; display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; border-right: none; }
+#results-area { flex: 1; min-width: 150px; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Dividers */
+.div-v { width: 4px; background: #21262d; cursor: col-resize; flex-shrink: 0; transition: background 0.15s; }
+.div-h { height: 4px; background: #21262d; cursor: row-resize; flex-shrink: 0; transition: background 0.15s; }
+.div-v:hover, .div-v.drag, .div-h:hover, .div-h.drag { background: #388bfd; }
+
+/* ── SHARED SECTION STYLES ────────────────── */
+.pane-hdr {
+  padding: 8px 12px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: #484f58;
+  border-bottom: 1px solid #21262d;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.pane-hdr-title { color: #8b949e; }
+.pane-hdr-extra { color: #388bfd; font-weight: 600; }
+
+/* ── LEFT PANE — CHALLENGES ───────────────── */
+#left-pane .lp-header {
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid #21262d;
+  flex-shrink: 0;
+}
+#left-pane .lp-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #e6edf3;
+  margin-bottom: 6px;
+}
+.lp-progress-bar { height: 3px; background: #21262d; border-radius: 2px; overflow: hidden; }
+.lp-progress-fill { height: 100%; background: #3fb950; border-radius: 2px; transition: width 0.4s; }
+.lp-progress-text { font-size: 10px; color: #484f58; margin-top: 4px; }
+
+/* Groups */
+.ch-group { border-bottom: 1px solid #21262d; }
+.ch-group-hdr {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8b949e;
+  transition: background 0.1s;
+}
+.ch-group-hdr:hover:not(.locked) { background: #1c2333; color: #e6edf3; }
+.ch-group-hdr.locked { cursor: default; opacity: 0.45; }
+.ch-group-arrow { font-size: 8px; color: #484f58; transition: transform 0.15s; flex-shrink: 0; }
+.ch-group-arrow.open { transform: rotate(90deg); }
+.ch-group-name { flex: 1; }
+.ch-group-badge { font-size: 9px; color: #484f58; font-weight: 500; white-space: nowrap; }
+.ch-group-badge.done { color: #3fb950; }
+.ch-group-lock { font-size: 11px; margin-left: 2px; }
+.ch-group-body { display: none; }
+.ch-group-body.open { display: block; }
+.ch-lock-msg { padding: 6px 14px 8px 28px; font-size: 10px; color: #484f58; font-style: italic; }
+
+/* Items */
+.ch-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 14px 5px 24px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #6e7681;
+  line-height: 1.35;
+  transition: background 0.1s;
+}
+.ch-item:hover { background: #1c2333; color: #c9d1d9; }
+.ch-item.active { background: #1f2d45; color: #e6edf3; }
+.ch-item.solved { color: #3fb950; }
+.ch-dot { width: 5px; height: 5px; border-radius: 50%; background: #30363d; flex-shrink: 0; }
+.ch-item.solved .ch-dot { background: #3fb950; }
+.ch-item.active .ch-dot { background: #388bfd; }
+
+/* Detail */
+.ch-detail {
+  margin: 2px 10px 8px 10px;
+  padding: 10px 11px;
+  background: #0d1117;
+  border: 1px solid #1f2d45;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.ch-ex-text { color: #e6edf3; font-weight: 500; line-height: 1.45; margin-bottom: 4px; }
+.ch-expected { font-size: 10px; color: #484f58; margin-bottom: 8px; font-style: italic; }
+.ch-solved-tag { display: inline-block; font-size: 9px; background: #0d2112; color: #3fb950; border: 1px solid #1a4425; border-radius: 10px; padding: 1px 7px; margin-left: 5px; vertical-align: middle; }
+.ch-actions { display: flex; gap: 5px; flex-wrap: wrap; }
+.ch-btn { padding: 4px 9px; border-radius: 4px; font-size: 10px; transition: all 0.15s; white-space: nowrap; }
+.ch-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.ch-btn-hint  { background: #0d2112; border: 1px solid #1a4425; color: #3fb950; }
+.ch-btn-hint:hover:not(:disabled) { background: #1a4425; }
+.ch-btn-check { background: #0c1f3c; border: 1px solid #1a3468; color: #388bfd; }
+.ch-btn-check:hover:not(:disabled) { background: #1a3468; }
+.ch-hint-area { margin-top: 7px; }
+.ch-hint-box  { background: #1c2333; border-left: 2px solid #1a4425; padding: 6px 8px; font-size: 10px; color: #7ee787; border-radius: 0 4px 4px 0; margin-bottom: 4px; line-height: 1.5; }
+.ch-hint-num  { font-size: 9px; color: #3fb950; margin-bottom: 2px; font-weight: 700; }
+.ch-result    { margin-top: 7px; }
+.ch-ok        { color: #3fb950; font-weight: 600; font-size: 11px; }
+.ch-err       { color: #f85149; font-weight: 600; font-size: 11px; }
+.ch-info      { font-size: 10px; color: #484f58; margin-top: 2px; }
+.ch-write-badge { display:inline-block; font-size:9px; font-weight:700; background:#2d1b00; color:#e3b341; border:1px solid #7d4e00; border-radius:3px; padding:1px 5px; margin-left:5px; vertical-align:middle; letter-spacing:0.3px; }
+
+/* ── CENTER PANE — GRAPH ──────────────────── */
+#graph-svg { width: 100%; height: 100%; display: block; }
+#loading {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  background: rgba(13,17,23,0.8); z-index: 50; color: #6e7681; font-size: 12px;
+}
+#loading.hidden { display: none; }
+.spinner { width: 26px; height: 26px; border: 3px solid #21262d; border-top-color: #388bfd; border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+#graph-controls {
+  position: absolute; bottom: 12px; right: 12px;
+  display: flex; flex-direction: column; gap: 4px; z-index: 10;
+}
+.gc-btn {
+  width: 28px; height: 28px;
+  background: #161b22; border: 1px solid #30363d; border-radius: 5px;
+  color: #8b949e; font-size: 14px; display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s; line-height: 1;
+}
+.gc-btn:hover { background: #21262d; color: #e6edf3; border-color: #484f58; }
+.gc-btn.off { opacity: 0.35; }
+
+/* ── RIGHT PANE ───────────────────────────── */
+.rp-section { padding: 10px 12px; border-bottom: 1px solid #21262d; }
+.rp-section h3 { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: #484f58; margin-bottom: 7px; }
+.legend-item { display: flex; align-items: center; gap: 7px; font-size: 11px; margin-bottom: 4px; color: #8b949e; }
+.legend-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+#conn-status { font-size: 10px; color: #6e7681; line-height: 1.5; }
+#conn-status.ok  { color: #3fb950; }
+#conn-status.err { color: #f85149; }
+#filter-buttons { display: flex; flex-wrap: wrap; gap: 4px; }
+.filter-btn { padding: 2px 7px; border-radius: 10px; font-size: 9px; border: 1px solid currentColor; background: transparent; transition: opacity 0.15s; }
+.filter-btn.off { opacity: 0.3; }
+
+/* ── BOTTOM PANE ──────────────────────────── */
+#query-area  { border-right: 1px solid #21262d; }
+#cypher-input {
+  flex: 1; background: #0d1117; border: none; border-bottom: 1px solid #21262d;
+  color: #e6edf3; font-family: 'Cascadia Code', 'Consolas', 'Fira Code', monospace;
+  font-size: 12px; padding: 8px 10px; outline: none; resize: none; line-height: 1.55;
+  width: 100%;
+}
+#cypher-input:focus { background: #080c10; }
+.ba-footer { padding: 6px 10px; display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+#run-btn { padding: 5px 14px; background: #238636; border: 1px solid #2ea043; color: #fff; border-radius: 5px; font-size: 11px; font-weight: 600; transition: background 0.15s; }
+#run-btn:hover:not(:disabled) { background: #2ea043; }
+#run-btn:disabled { background: #21262d; border-color: #30363d; color: #6e7681; cursor: not-allowed; }
+#reset-btn { padding: 5px 10px; background: transparent; border: 1px solid #30363d; color: #8b949e; border-radius: 5px; font-size: 11px; transition: all 0.15s; }
+#reset-btn:hover { border-color: #6e7681; color: #e6edf3; }
+.key-hint { font-size: 10px; color: #484f58; }
+#results-body-wrap { flex: 1; overflow: auto; }
+.placeholder-msg { padding: 18px 14px; color: #484f58; font-size: 11px; text-align: center; line-height: 1.7; }
+.error-msg { padding: 10px 14px; color: #f85149; font-size: 11px; font-family: monospace; white-space: pre-wrap; word-break: break-word; }
+
+/* Results table */
+.results-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.results-table th { background: #0d1117; color: #388bfd; padding: 5px 10px; text-align: left; font-weight: 600; border-bottom: 1px solid #21262d; position: sticky; top: 0; z-index: 1; white-space: nowrap; }
+.results-table td { padding: 4px 10px; border-bottom: 1px solid #161b22; font-family: 'Consolas', monospace; font-size: 10px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.results-table tr:hover td { background: #1c2333; }
+.cell-node   { color: #58a6ff; }
+.cell-rel    { color: #56d364; }
+.cell-null   { color: #484f58; font-style: italic; }
+.cell-number { color: #e3b341; }
+.cell-bool   { color: #bc8cff; }
+.cell-string { color: #7ee787; }
+.cell-other  { color: #c9d1d9; }
+
+/* ── TOOLTIP ──────────────────────────────── */
+#tooltip {
+  position: fixed; background: #1c2333; border: 1px solid #30363d; border-radius: 6px;
+  padding: 9px 11px; pointer-events: none; opacity: 0; transition: opacity 0.12s;
+  max-width: 240px; z-index: 200; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#tooltip.vis { opacity: 1; }
+.tt-label { font-weight: 700; font-size: 11px; color: #388bfd; margin-bottom: 6px; }
+.tt-row   { display: flex; gap: 6px; font-size: 10px; margin-bottom: 2px; }
+.tt-key   { color: #6e7681; flex-shrink: 0; }
+.tt-val   { color: #e6edf3; word-break: break-word; }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ── TOP AREA ──────────────────────────────────── -->
+  <div id="top-area">
+
+    <!-- LEFT PANE: Challenges -->
+    <div id="left-pane">
+      <div class="lp-header">
+        <div class="lp-title">Challenges</div>
+        <div class="lp-progress-bar"><div class="lp-progress-fill" id="lp-fill" style="width:0%"></div></div>
+        <div class="lp-progress-text" id="lp-progress-text">0 / 0 solved</div>
+      </div>
+      <div id="ch-groups-container"><!-- populated by JS --></div>
+    </div>
+    <div id="div-lc" class="div-v"></div>
+
+    <!-- CENTER PANE: Graph -->
+    <div id="center-pane">
+      <div id="loading"><div class="spinner"></div><span id="loading-msg">Connecting…</span></div>
+      <svg id="graph-svg"></svg>
+      <div id="graph-controls">
+        <button class="gc-btn" id="btn-zoom-in"  title="Zoom in">+</button>
+        <button class="gc-btn" id="btn-zoom-out" title="Zoom out">−</button>
+        <button class="gc-btn" id="btn-fit"      title="Fit to screen">⊙</button>
+      </div>
+    </div>
+    <div id="div-cr" class="div-v"></div>
+
+    <!-- RIGHT PANE: Legend + Filters -->
+    <div id="right-pane">
+      <div class="rp-section">
+        <h3>Connection</h3>
+        <div id="conn-status">Connecting…</div>
+      </div>
+      <div class="rp-section">
+        <h3>Node Types</h3>
+        <div id="legend-items"></div>
+      </div>
+      <div class="rp-section">
+        <h3 style="display:flex;align-items:center;justify-content:space-between;">
+          Relationships
+          <button id="btn-rel-labels" title="Toggle relationship labels"
+            style="padding:2px 7px;font-size:9px;font-weight:700;background:#1c2333;border:1px solid #30363d;color:#8b949e;border-radius:4px;cursor:pointer;transition:all .15s;font-family:inherit;">
+            LABELS ON
+          </button>
+        </h3>
+        <div id="filter-buttons"></div>
+      </div>
+      <div class="rp-section">
+        <h3>Database</h3>
+        <div style="display:flex;flex-direction:column;gap:5px;">
+          <button id="btn-dump-schema"
+            style="padding:4px 8px;background:#0d1117;border:1px solid #30363d;color:#8b949e;border-radius:4px;font-size:10px;font-family:inherit;cursor:pointer;text-align:left;transition:all .15s;"
+            onmouseover="this.style.borderColor='#484f58';this.style.color='#e6edf3'"
+            onmouseout="this.style.borderColor='#30363d';this.style.color='#8b949e'">
+            📋 Dump Schema
+          </button>
+          <button id="btn-reset-db"
+            style="padding:4px 8px;background:#0d1117;border:1px solid #30363d;color:#8b949e;border-radius:4px;font-size:10px;font-family:inherit;cursor:pointer;text-align:left;transition:all .15s;"
+            onmouseover="this.style.borderColor='#f85149';this.style.color='#f85149'"
+            onmouseout="this.style.borderColor='#30363d';this.style.color='#8b949e'">
+            🗑 Reset DB
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /top-area -->
+
+  <!-- HORIZONTAL DIVIDER -->
+  <div id="div-tb" class="div-h"></div>
+
+  <!-- ── BOTTOM PANE ────────────────────────────────── -->
+  <div id="bottom-pane">
+
+    <!-- Query Area -->
+    <div id="query-area">
+      <div class="pane-hdr"><span class="pane-hdr-title">Cypher Query</span></div>
+      <textarea id="cypher-input" placeholder="MATCH (n)-[r]->(m) RETURN n, r, m LIMIT 25" spellcheck="false"></textarea>
+      <div class="ba-footer">
+        <button id="run-btn"   disabled>▶ Run</button>
+        <button id="reset-btn">Reset</button>
+        <span class="key-hint">Ctrl+Enter</span>
+      </div>
+    </div>
+    <div id="div-qr" class="div-v"></div>
+
+    <!-- Results Area -->
+    <div id="results-area">
+      <div class="pane-hdr"><span class="pane-hdr-title">Results</span><span class="pane-hdr-extra" id="results-count"></span></div>
+      <div id="results-body-wrap">
+        <div class="placeholder-msg">Run a Cypher query to see results.<br>Returned nodes / relationships will be highlighted on the graph.</div>
+      </div>
+    </div>
+
+  </div><!-- /bottom-pane -->
+
+</div><!-- /app -->
+
+<div id="tooltip"></div>
+
+<!-- Fireworks overlay -->
+<div id="fw-overlay" style="display:none;position:fixed;inset:0;z-index:1000;flex-direction:column;align-items:center;justify-content:center;transition:opacity 0.5s;opacity:1;">
+  <canvas id="fw-canvas" style="position:absolute;inset:0;pointer-events:none;"></canvas>
+  <div style="position:relative;z-index:1;text-align:center;padding:24px 32px;background:rgba(13,17,23,0.7);border-radius:16px;border:1px solid rgba(255,215,0,0.3);backdrop-filter:blur(8px);">
+    <div style="font-size:2.2rem;font-weight:900;color:#ffd700;text-shadow:0 0 24px rgba(255,215,0,0.7);margin-bottom:6px;">🎉 All Challenges Complete! 🎉</div>
+    <div style="font-size:1rem;color:#e6edf3;opacity:0.75;margin-bottom:18px;">You've mastered Neo4j Cypher!</div>
+    <button id="fw-skip" style="padding:7px 22px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#e6edf3;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit;transition:background .15s;" onmouseover="this.style.background='rgba(255,255,255,0.22)'" onmouseout="this.style.background='rgba(255,255,255,0.12)'">Skip</button>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════
+// CONFIG
+// ════════════════════════════════════════════════════════
+const BOLT_URI = 'bolt://localhost:7687';
+const DB_USER  = 'neo4j';
+const DB_PASS  = 'password';
+
+const NODE_COLORS = { Person: '#1f6feb', Department: '#238636', Event: '#9e6a03', _: '#8250df' };
+const REL_COLORS  = {
+  WORKS_IN: '#6e7681', MANAGES: '#f85149', FRIENDS_WITH: '#db61a2',
+  WORKS_WITH: '#1abc9c', RIVAL_OF: '#e3b341', DATING: '#bc8cff',
+  ATTENDED: '#388bfd', _: '#6e7681',
+};
+function nodeColor(n) { for (const l of n.labels) if (NODE_COLORS[l]) return NODE_COLORS[l]; return NODE_COLORS._; }
+function relColor(t)  { return REL_COLORS[t] || REL_COLORS._; }
+function nodeRadius(n){ if (n.labels.includes('Department')) return 22; if (n.labels.includes('Event')) return 19; return 16; }
+function toId(v)  { if (v==null) return ''; if (typeof v==='bigint') return v.toString(); if (typeof v==='number') return v.toString(); if (neo4j.isInt&&neo4j.isInt(v)) return v.toString(); return String(v); }
+function toNum(v) { if (v==null) return v; if (typeof v==='bigint') return Number(v); if (typeof v==='number') return v; if (neo4j.isInt&&neo4j.isInt(v)) return v.toNumber(); return v; }
+function propsToPlain(p) { const o={}; for (const [k,v] of Object.entries(p)) o[k]=toNum(v); return o; }
+function isNode(v) { return v&&v.labels!==undefined&&v.identity!==undefined; }
+function isRel(v)  { return v&&v.type!==undefined&&v.start!==undefined&&v.end!==undefined; }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function initials(d) { const n=d.properties.name; if (!n) return d.labels[0].charAt(0); const p=n.split(' '); return p.length===1?n.substring(0,2).toUpperCase():(p[0][0]+p[p.length-1][0]).toUpperCase(); }
+function markerKey(t) { return REL_COLORS[t] ? t : '_'; }
+
+// ════════════════════════════════════════════════════════
+// INIT CYPHER (mirrors init.cypher — used for DB reset)
+// ════════════════════════════════════════════════════════
+const INIT_CYPHER = `CREATE (michael:Person {name: "Michael Scott", position: "Regional Manager", age: 45}),
+(jim:Person {name: "Jim Halpert", position: "Salesman", age: 30}),
+(pam:Person {name: "Pam Beesly", position: "Receptionist", age: 28}),
+(dwight:Person {name: "Dwight Schrute", position: "Salesman", age: 38}),
+(angela:Person {name: "Angela Martin", position: "Accountant", age: 35}),
+(kevin:Person {name: "Kevin Malone", position: "Accountant", age: 40}),
+(oscar:Person {name: "Oscar Martinez", position: "Accountant", age: 38}),
+(ryan:Person {name: "Ryan Howard", position: "Temp", age: 25}),
+(kelly:Person {name: "Kelly Kapoor", position: "Customer Service", age: 29}),
+(toby:Person {name: "Toby Flenderson", position: "HR", age: 42}),
+(jan:Person {name: "Jan Levinson", position: "Corporate", age: 40}),
+(stanley:Person {name: "Stanley Hudson", position: "Salesman", age: 48}),
+(phyllis:Person {name: "Phyllis Vance", position: "Saleswoman", age: 42}),
+(sales:Department {name: "Sales"}),
+(accounting:Department {name: "Accounting"}),
+(hr:Department {name: "HR"}),
+(customerService:Department {name: "Customer Service"}),
+(corporate:Department {name: "Corporate"}),
+(dundies:Event {name: "Dundies"}),
+(officeParty:Event {name: "Office Party"}),
+(companyPicnic:Event {name: "Company Picnic"}),
+(michael)-[:WORKS_IN]->(sales),(jim)-[:WORKS_IN]->(sales),(dwight)-[:WORKS_IN]->(sales),
+(ryan)-[:WORKS_IN]->(sales),(stanley)-[:WORKS_IN]->(sales),(phyllis)-[:WORKS_IN]->(sales),
+(angela)-[:WORKS_IN]->(accounting),(kevin)-[:WORKS_IN]->(accounting),(oscar)-[:WORKS_IN]->(accounting),
+(toby)-[:WORKS_IN]->(hr),(kelly)-[:WORKS_IN]->(customerService),(jan)-[:WORKS_IN]->(corporate),
+(michael)-[:MANAGES]->(jim),(michael)-[:MANAGES]->(pam),(michael)-[:MANAGES]->(dwight),
+(michael)-[:MANAGES]->(angela),(michael)-[:MANAGES]->(kevin),(michael)-[:MANAGES]->(oscar),
+(michael)-[:MANAGES]->(ryan),(michael)-[:MANAGES]->(kelly),(michael)-[:MANAGES]->(toby),
+(michael)-[:MANAGES]->(stanley),(michael)-[:MANAGES]->(phyllis),
+(jim)-[:FRIENDS_WITH]->(pam),(pam)-[:FRIENDS_WITH]->(michael),(michael)-[:FRIENDS_WITH]->(dwight),
+(dwight)-[:FRIENDS_WITH]->(angela),(angela)-[:FRIENDS_WITH]->(oscar),
+(oscar)-[:FRIENDS_WITH]->(kevin),(kevin)-[:FRIENDS_WITH]->(kelly),
+(jim)-[:WORKS_WITH]->(dwight),(dwight)-[:WORKS_WITH]->(angela),(angela)-[:WORKS_WITH]->(oscar),
+(oscar)-[:WORKS_WITH]->(kevin),(stanley)-[:WORKS_WITH]->(phyllis),
+(dwight)-[:RIVAL_OF]->(jim),(ryan)-[:DATING]->(kelly),(michael)-[:DATING]->(jan),
+(michael)-[:ATTENDED]->(dundies),(jim)-[:ATTENDED]->(dundies),(pam)-[:ATTENDED]->(dundies),
+(dwight)-[:ATTENDED]->(dundies),(angela)-[:ATTENDED]->(dundies),(stanley)-[:ATTENDED]->(dundies),
+(kevin)-[:ATTENDED]->(officeParty),(oscar)-[:ATTENDED]->(officeParty),(kelly)-[:ATTENDED]->(officeParty),
+(ryan)-[:ATTENDED]->(officeParty),(phyllis)-[:ATTENDED]->(officeParty),
+(michael)-[:ATTENDED]->(companyPicnic),(jim)-[:ATTENDED]->(companyPicnic),
+(pam)-[:ATTENDED]->(companyPicnic),(dwight)-[:ATTENDED]->(companyPicnic),(jan)-[:ATTENDED]->(companyPicnic)`;
+
+// ════════════════════════════════════════════════════════
+// CHALLENGES DATA
+// ════════════════════════════════════════════════════════
+const CHALLENGES = [
+  { group:'Basic MATCH',
+    exercise:'Find all people in the office.',
+    expected:'13 rows · p',
+    hints:['Use MATCH (p:Person) to match all Person nodes.','MATCH (p:Person) RETURN p'],
+    query:'MATCH (p:Person) RETURN p' },
+  { group:'Basic MATCH',
+    exercise:'Find the names of all people in the office.',
+    expected:'13 rows · p.name',
+    hints:['Use MATCH (p:Person) to match all Person nodes.','MATCH (p:Person) RETURN p.name'],
+    query:'MATCH (p:Person) RETURN p.name ORDER BY p.name' },
+  { group:'Basic MATCH',
+    exercise:'List all department names.',
+    expected:'5 rows · d.name',
+    hints:['Use the Department label: MATCH (d:Department)','MATCH (d:Department) RETURN d.name'],
+    query:'MATCH (d:Department) RETURN d.name ORDER BY d.name' },
+  { group:'Basic MATCH',
+    exercise:"Return each person's name and job position.",
+    expected:'13 rows · p.name, p.position',
+    hints:['MATCH (p:Person) and return two properties.','MATCH (p:Person) RETURN p.name, p.position ORDER BY p.name'],
+    query:'MATCH (p:Person) RETURN p.name, p.position ORDER BY p.name' },
+
+  { group:'Filtering',
+    exercise:'Find people older than 40. Return name and age.',
+    expected:'4 rows · p.name, p.age',
+    hints:['Add WHERE p.age > 40 after your MATCH clause.','MATCH (p:Person) WHERE p.age > 40 RETURN p.name, p.age ORDER BY p.age DESC'],
+    query:'MATCH (p:Person) WHERE p.age > 40 RETURN p.name, p.age ORDER BY p.age DESC' },
+  { group:'Filtering',
+    exercise:"Find all salespeople (Salesman or Saleswoman).",
+    expected:'4 rows · p.name',
+    hints:["Use WHERE p.position IN ['Salesman','Saleswoman'].","MATCH (p:Person) WHERE p.position IN ['Salesman','Saleswoman'] RETURN p.name ORDER BY p.name"],
+    query:"MATCH (p:Person) WHERE p.position IN ['Salesman','Saleswoman'] RETURN p.name ORDER BY p.name" },
+  { group:'Filtering',
+    exercise:'Who is the Regional Manager? Return their name.',
+    expected:'1 row · p.name',
+    hints:["Filter inline: MATCH (p:Person {position:'Regional Manager'})","MATCH (p:Person {position:'Regional Manager'}) RETURN p.name"],
+    query:"MATCH (p:Person {position:'Regional Manager'}) RETURN p.name" },
+
+  { group:'Relationships',
+    exercise:'Who does Michael Scott directly manage?',
+    expected:'11 rows · e.name',
+    hints:["Use -[:MANAGES]-> from Michael's node.","MATCH (m:Person {name:'Michael Scott'})-[:MANAGES]->(e) RETURN e.name ORDER BY e.name"],
+    query:"MATCH (m:Person {name:'Michael Scott'})-[:MANAGES]->(e) RETURN e.name ORDER BY e.name" },
+  { group:'Relationships',
+    exercise:'Which people work in the Sales department?',
+    expected:'6 rows · p.name',
+    hints:['Use the WORKS_IN relationship to Department.',"MATCH (p:Person)-[:WORKS_IN]->(d:Department {name:'Sales'}) RETURN p.name ORDER BY p.name"],
+    query:"MATCH (p:Person)-[:WORKS_IN]->(d:Department {name:'Sales'}) RETURN p.name ORDER BY p.name" },
+  { group:'Relationships',
+    exercise:'Which pairs of people are dating? Return both names.',
+    expected:'2 rows · a.name, b.name',
+    hints:['Use the DATING relationship.','MATCH (a:Person)-[:DATING]->(b:Person) RETURN a.name, b.name ORDER BY a.name'],
+    query:'MATCH (a:Person)-[:DATING]->(b:Person) RETURN a.name, b.name ORDER BY a.name' },
+  { group:'Relationships',
+    exercise:'Who attended the Dundies ceremony?',
+    expected:'6 rows · p.name',
+    hints:["Use ATTENDED to an Event node named 'Dundies'.","MATCH (p)-[:ATTENDED]->(e:Event {name:'Dundies'}) RETURN p.name ORDER BY p.name"],
+    query:"MATCH (p)-[:ATTENDED]->(e:Event {name:'Dundies'}) RETURN p.name ORDER BY p.name" },
+
+  { group:'Aggregation',
+    exercise:'How many people work in each department? Order by headcount desc.',
+    expected:'5 rows · d.name, members',
+    hints:['Use count(p) grouped by department.','MATCH (p:Person)-[:WORKS_IN]->(d:Department) RETURN d.name, count(p) AS members ORDER BY members DESC'],
+    query:'MATCH (p:Person)-[:WORKS_IN]->(d:Department) RETURN d.name, count(p) AS members ORDER BY members DESC' },
+  { group:'Aggregation',
+    exercise:'What is the average age per department?',
+    expected:'5 rows · d.name, avg_age',
+    hints:['Use avg(p.age) grouped by d.name.','MATCH (p:Person)-[:WORKS_IN]->(d:Department) RETURN d.name, avg(p.age) AS avg_age ORDER BY d.name'],
+    query:'MATCH (p:Person)-[:WORKS_IN]->(d:Department) RETURN d.name, avg(p.age) AS avg_age ORDER BY d.name' },
+  { group:'Aggregation',
+    exercise:'How many events did each person attend? (attended ≥ 1 only)',
+    expected:'12 rows · p.name, events_attended',
+    hints:['Use count(e) after matching (p)-[:ATTENDED]->(e:Event).','MATCH (p:Person)-[:ATTENDED]->(e:Event) RETURN p.name, count(e) AS events_attended ORDER BY events_attended DESC, p.name'],
+    query:'MATCH (p:Person)-[:ATTENDED]->(e:Event) RETURN p.name, count(e) AS events_attended ORDER BY events_attended DESC, p.name' },
+
+  { group:'Advanced',
+    exercise:"Find all of Jim Halpert's direct friends.",
+    expected:'1 row · friend.name',
+    hints:["Use the FRIENDS_WITH relationship from Jim.","MATCH (jim:Person {name:'Jim Halpert'})-[:FRIENDS_WITH]->(friend) RETURN friend.name"],
+    query:"MATCH (jim:Person {name:'Jim Halpert'})-[:FRIENDS_WITH]->(friend) RETURN friend.name" },
+  { group:'Advanced',
+    exercise:'Find people who both work together AND are friends.',
+    expected:'3 rows · a.name, b.name',
+    hints:['Match two relationships on the same pair in one MATCH.','MATCH (a)-[:WORKS_WITH]->(b),(a)-[:FRIENDS_WITH]->(b) RETURN a.name, b.name ORDER BY a.name'],
+    query:'MATCH (a)-[:WORKS_WITH]->(b),(a)-[:FRIENDS_WITH]->(b) RETURN a.name, b.name ORDER BY a.name' },
+  { group:'Advanced',
+    exercise:"Find Jim Halpert's co-workers (same dept, excluding Jim).",
+    expected:'5 rows · coworker.name',
+    hints:['Match Jim → dept ← coworker, filter out Jim.',"MATCH (jim:Person {name:'Jim Halpert'})-[:WORKS_IN]->(d)<-[:WORKS_IN]-(c) WHERE c<>jim RETURN c.name ORDER BY c.name"],
+    query:"MATCH (jim:Person {name:'Jim Halpert'})-[:WORKS_IN]->(d)<-[:WORKS_IN]-(c) WHERE c<>jim RETURN c.name ORDER BY c.name" },
+  { group:'Advanced',
+    exercise:'Find people who attended the Company Picnic but NOT the Office Party.',
+    expected:'5 rows · p.name',
+    hints:["Use NOT (p)-[:ATTENDED]->(:Event {name:'Office Party'}) in WHERE.","MATCH (p)-[:ATTENDED]->(e:Event {name:'Company Picnic'}) WHERE NOT (p)-[:ATTENDED]->(:Event {name:'Office Party'}) RETURN p.name ORDER BY p.name"],
+    query:"MATCH (p)-[:ATTENDED]->(e:Event {name:'Company Picnic'}) WHERE NOT (p)-[:ATTENDED]->(:Event {name:'Office Party'}) RETURN p.name ORDER BY p.name" },
+
+  // ── Creation & Modification ───────────────────────────
+  { group:'Creation & Modification', type:'write',
+    exercise:"Create a new Person node: Roy Anderson, position 'Warehouse', age 32.",
+    expected:'1 row · p.name, p.position, p.age',
+    hints:[
+      "Use CREATE (:Person {name:..., position:..., age:...}) — no MATCH needed.",
+      "CREATE (:Person {name:'Roy Anderson', position:'Warehouse', age:32})",
+    ],
+    query:"CREATE (:Person {name:'Roy Anderson', position:'Warehouse', age:32})",
+    verify:"MATCH (p:Person {name:'Roy Anderson'}) RETURN p.name, p.position, p.age",
+    cleanup:"MATCH (p:Person {name:'Roy Anderson'}) DETACH DELETE p",
+    expectedNormalized:'[["32","Roy Anderson","Warehouse"]]' },
+
+  { group:'Creation & Modification', type:'write',
+    exercise:"Create a FRIENDS_WITH relationship from Pam Beesly to Jim Halpert.",
+    expected:'1 row · pam.name, jim.name',
+    hints:[
+      "MATCH both nodes first, then CREATE the relationship between them.",
+      "MATCH (pam:Person {name:'Pam Beesly'}),(jim:Person {name:'Jim Halpert'}) CREATE (pam)-[:FRIENDS_WITH]->(jim)",
+    ],
+    query:"MATCH (pam:Person {name:'Pam Beesly'}),(jim:Person {name:'Jim Halpert'}) CREATE (pam)-[:FRIENDS_WITH]->(jim)",
+    verify:"MATCH (pam:Person {name:'Pam Beesly'})-[:FRIENDS_WITH]->(jim:Person {name:'Jim Halpert'}) RETURN pam.name, jim.name",
+    cleanup:"MATCH (:Person {name:'Pam Beesly'})-[r:FRIENDS_WITH]->(:Person {name:'Jim Halpert'}) DELETE r",
+    expectedNormalized:'[["Jim Halpert","Pam Beesly"]]' },
+
+  { group:'Creation & Modification', type:'write',
+    exercise:"Michael got a year older — update his age to 46.",
+    expected:'1 row · m.age = 46',
+    hints:[
+      "Use MATCH to find the node, then SET property = value.",
+      "MATCH (m:Person {name:'Michael Scott'}) SET m.age = 46",
+    ],
+    query:"MATCH (m:Person {name:'Michael Scott'}) SET m.age = 46",
+    verify:"MATCH (m:Person {name:'Michael Scott'}) RETURN m.age",
+    cleanup:"MATCH (m:Person {name:'Michael Scott'}) SET m.age = 45",
+    expectedNormalized:'[["46"]]' },
+
+  { group:'Creation & Modification', type:'write',
+    exercise:"Create an Event 'Beach Games' and connect every Sales employee to it with ATTENDED.",
+    expected:'6 rows · p.name (Sales team)',
+    hints:[
+      "CREATE the Event first, pass it with WITH, then MATCH Sales employees and CREATE relationships.",
+      "CREATE (e:Event {name:'Beach Games'}) WITH e MATCH (p:Person)-[:WORKS_IN]->(:Department {name:'Sales'}) CREATE (p)-[:ATTENDED]->(e)",
+    ],
+    query:"CREATE (e:Event {name:'Beach Games'}) WITH e MATCH (p:Person)-[:WORKS_IN]->(:Department {name:'Sales'}) CREATE (p)-[:ATTENDED]->(e)",
+    verify:"MATCH (e:Event {name:'Beach Games'})<-[:ATTENDED]-(p) RETURN p.name ORDER BY p.name",
+    cleanup:"MATCH (e:Event {name:'Beach Games'}) DETACH DELETE e",
+    expectedNormalized:'[["Dwight Schrute"],["Jim Halpert"],["Michael Scott"],["Phyllis Vance"],["Ryan Howard"],["Stanley Hudson"]]' },
+
+  { group:'Creation & Modification', type:'write',
+    exercise:"Use MERGE to add a RIVAL_OF relationship from Pam Beesly to Angela Martin (create only if absent).",
+    expected:'1 row · p.name, a.name',
+    hints:[
+      "MERGE creates the pattern only if it does not already exist.",
+      "MATCH (p:Person {name:'Pam Beesly'}),(a:Person {name:'Angela Martin'}) MERGE (p)-[:RIVAL_OF]->(a)",
+    ],
+    query:"MATCH (p:Person {name:'Pam Beesly'}),(a:Person {name:'Angela Martin'}) MERGE (p)-[:RIVAL_OF]->(a)",
+    verify:"MATCH (p:Person {name:'Pam Beesly'})-[:RIVAL_OF]->(a:Person {name:'Angela Martin'}) RETURN p.name, a.name",
+    cleanup:"MATCH (:Person {name:'Pam Beesly'})-[r:RIVAL_OF]->(:Person {name:'Angela Martin'}) DELETE r",
+    expectedNormalized:'[["Angela Martin","Pam Beesly"]]' },
+
+  { group:'Creation & Modification', type:'write',
+    exercise:"Ryan got fired — remove the 'position' property from his node.",
+    expected:'1 row · r.position = null',
+    hints:[
+      "Use REMOVE node.property to delete a property entirely.",
+      "MATCH (r:Person {name:'Ryan Howard'}) REMOVE r.position",
+    ],
+    query:"MATCH (r:Person {name:'Ryan Howard'}) REMOVE r.position",
+    verify:"MATCH (r:Person {name:'Ryan Howard'}) RETURN r.position",
+    cleanup:"MATCH (r:Person {name:'Ryan Howard'}) SET r.position = 'Temp'",
+    expectedNormalized:'[["null"]]' },
+];
+
+// ════════════════════════════════════════════════════════
+// CHALLENGE GROUPS (precomputed)
+// ════════════════════════════════════════════════════════
+const GROUP_ORDER = [...new Set(CHALLENGES.map(c => c.group))];
+const GROUPS = GROUP_ORDER.map(name => ({
+  name,
+  indices: CHALLENGES.flatMap((c, i) => c.group === name ? [i] : []),
+}));
+
+function isGroupUnlocked(gi) {
+  if (gi === 0) return true;
+  return GROUPS[gi - 1].indices.every(i => solvedSet.has(i));
+}
+
+// ════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════
+let driver     = null;
+let simulation = null;
+let zoomBhv    = null;
+let svgSel, gMain, gLinks, gLinkLabels, gNodes;
+let allNodes   = [];
+let allLinks   = [];
+let activeRels = new Set();
+
+let relLabelsOn  = true;
+let activeChalIdx = -1;
+let hintCounts    = {};
+let solvedSet     = new Set();
+
+// ════════════════════════════════════════════════════════
+// BOOT
+// ════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  initSvg();
+  initDividers();
+  renderChallenges();
+  connect();
+
+  document.getElementById('run-btn').addEventListener('click', runQuery);
+  document.getElementById('reset-btn').addEventListener('click', resetHighlight);
+  document.getElementById('cypher-input').addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') runQuery();
+  });
+  document.getElementById('btn-zoom-in').addEventListener('click',
+    () => { svgSel.transition().duration(300).call(zoomBhv.scaleBy, 1.4); trackSecret('in'); });
+  document.getElementById('btn-zoom-out').addEventListener('click',
+    () => { svgSel.transition().duration(300).call(zoomBhv.scaleBy, 0.72); trackSecret('out'); });
+  document.getElementById('btn-fit').addEventListener('click',
+    () => { fitView(); trackSecret('fit'); });
+  document.getElementById('btn-rel-labels').addEventListener('click', toggleRelLabels);
+  document.getElementById('btn-dump-schema').addEventListener('click', dumpSchema);
+  document.getElementById('btn-reset-db').addEventListener('click', resetDB);
+});
+
+// ════════════════════════════════════════════════════════
+// NEO4J
+// ════════════════════════════════════════════════════════
+async function connect() {
+  setLoading('Connecting…');
+  const statusEl = document.getElementById('conn-status');
+  try {
+    driver = neo4j.driver(BOLT_URI, neo4j.auth.basic(DB_USER, DB_PASS));
+    await driver.verifyConnectivity();
+    statusEl.textContent = `Connected — ${BOLT_URI}`;
+    statusEl.className = 'ok';
+    document.getElementById('run-btn').disabled = false;
+    await loadFullGraph();
+  } catch (err) {
+    statusEl.textContent = `Connection failed: ${err.message}`;
+    statusEl.className = 'err';
+    setLoading('Could not connect to Neo4j');
+  }
+}
+
+async function loadFullGraph() {
+  setLoading('Loading graph…');
+  const session = driver.session({ defaultAccessMode: neo4j.session.READ });
+  try {
+    const nr = await session.run('MATCH (n) RETURN n');
+    const rr = await session.run('MATCH ()-[r]->() RETURN r');
+
+    const nodesMap = {};
+    nr.records.forEach(rec => {
+      const n = rec.get('n');
+      const id = toId(n.identity);
+      nodesMap[id] = { id, labels: n.labels, properties: propsToPlain(n.properties) };
+    });
+
+    const links = [];
+    rr.records.forEach(rec => {
+      const r = rec.get('r');
+      links.push({ id: toId(r.identity), source: toId(r.start), target: toId(r.end), type: r.type, properties: propsToPlain(r.properties) });
+    });
+
+    allNodes  = Object.values(nodesMap);
+    allLinks  = links;
+    activeRels = new Set(links.map(l => l.type));
+
+    buildLegend(allNodes);
+    buildFilters(allLinks);
+    renderGraph(allNodes, allLinks);
+  } finally {
+    await session.close();
+  }
+}
+
+async function refreshGraph() {
+  const session = driver.session({ defaultAccessMode: neo4j.session.READ });
+  try {
+    const nr = await session.run('MATCH (n) RETURN n');
+    const rr = await session.run('MATCH ()-[r]->() RETURN r');
+    const nodesMap = {};
+    nr.records.forEach(rec => {
+      const n = rec.get('n');
+      const id = toId(n.identity);
+      nodesMap[id] = { id, labels: n.labels, properties: propsToPlain(n.properties) };
+    });
+    const links = [];
+    rr.records.forEach(rec => {
+      const r = rec.get('r');
+      links.push({ id: toId(r.identity), source: toId(r.start), target: toId(r.end), type: r.type, properties: propsToPlain(r.properties) });
+    });
+    allNodes  = Object.values(nodesMap);
+    allLinks  = links;
+    activeRels = new Set(links.map(l => l.type));
+    buildLegend(allNodes);
+    buildFilters(allLinks);
+    renderGraph(allNodes, allLinks);
+  } finally {
+    await session.close();
+  }
+}
+
+// ════════════════════════════════════════════════════════
+// LEGEND & FILTERS
+// ════════════════════════════════════════════════════════
+function buildLegend(nodes) {
+  const labels = [...new Set(nodes.flatMap(n => n.labels))];
+  const c = document.getElementById('legend-items');
+  c.innerHTML = '';
+  labels.forEach(lbl => {
+    const color = NODE_COLORS[lbl] || NODE_COLORS._;
+    c.insertAdjacentHTML('beforeend',
+      `<div class="legend-item"><div class="legend-dot" style="background:${color}"></div>${lbl}</div>`);
+  });
+}
+
+function buildFilters(links) {
+  const types = [...new Set(links.map(l => l.type))].sort();
+  const c = document.getElementById('filter-buttons');
+  c.innerHTML = '';
+  types.forEach(type => {
+    const color = relColor(type);
+    const btn = document.createElement('button');
+    btn.className = 'filter-btn';
+    btn.style.cssText = `color:${color};border-color:${color};background:${color}22`;
+    btn.textContent = type;
+    btn.dataset.type = type;
+    btn.addEventListener('click', () => {
+      if (activeRels.has(type)) { activeRels.delete(type); btn.classList.add('off'); }
+      else                      { activeRels.add(type);    btn.classList.remove('off'); }
+      applyRelFilter();
+    });
+    c.appendChild(btn);
+  });
+}
+
+function applyRelFilter() {
+  gLinks.selectAll('.lnk').style('display', d => activeRels.has(d.type) ? null : 'none');
+  gLinkLabels.selectAll('.lnk-lbl').style('display', d => activeRels.has(d.type) ? null : 'none');
+}
+
+// ════════════════════════════════════════════════════════
+// SVG INIT
+// ════════════════════════════════════════════════════════
+function initSvg() {
+  svgSel = d3.select('#graph-svg');
+
+  const defs = svgSel.append('defs');
+  [...Object.keys(REL_COLORS), 'highlight'].forEach(key => {
+    const color = key === 'highlight' ? '#58a6ff' : (REL_COLORS[key] || REL_COLORS._);
+    defs.append('marker')
+      .attr('id', `arrow-${key}`)
+      .attr('viewBox', '0 -5 10 10').attr('refX', 10).attr('refY', 0)
+      .attr('markerWidth', 5).attr('markerHeight', 5).attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-5L10,0L0,5Z').attr('fill', color);
+  });
+
+  zoomBhv = d3.zoom().scaleExtent([0.05, 5]).on('zoom', e => gMain.attr('transform', e.transform));
+  svgSel.call(zoomBhv).on('dblclick.zoom', null);
+
+  gMain       = svgSel.append('g');
+  gLinks      = gMain.append('g');
+  gLinkLabels = gMain.append('g');
+  gNodes      = gMain.append('g');
+}
+
+// ════════════════════════════════════════════════════════
+// RENDER GRAPH
+// ════════════════════════════════════════════════════════
+function renderGraph(nodes, links) {
+  const cp = document.getElementById('center-pane');
+  const w = cp.clientWidth, h = cp.clientHeight;
+
+  const nodeMap = {};
+  nodes.forEach(n => { nodeMap[n.id] = n; });
+
+  const validLinks = links
+    .filter(l => nodeMap[l.source] && nodeMap[l.target])
+    .map(l => ({ ...l }));
+
+  if (simulation) simulation.stop();
+  simulation = d3.forceSimulation(nodes)
+    .force('link',      d3.forceLink(validLinks).id(d => d.id).distance(130))
+    .force('charge',    d3.forceManyBody().strength(-400))
+    .force('center',    d3.forceCenter(w / 2, h / 2))
+    .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 12));
+
+  const linkSel = gLinks.selectAll('.lnk')
+    .data(validLinks, d => d.id)
+    .join('line').attr('class', 'lnk')
+    .attr('stroke', d => relColor(d.type)).attr('stroke-width', 1.8)
+    .attr('stroke-opacity', 0.6).attr('marker-end', d => `url(#arrow-${markerKey(d.type)})`);
+
+  const linkLblSel = gLinkLabels.selectAll('.lnk-lbl')
+    .data(validLinks, d => d.id)
+    .join('text').attr('class', 'lnk-lbl')
+    .attr('text-anchor', 'middle').attr('font-size', 8)
+    .attr('font-family', 'Segoe UI, sans-serif')
+    .attr('fill', d => relColor(d.type)).attr('opacity', 0.75).attr('pointer-events', 'none')
+    .text(d => d.type);
+
+  const nodeSel = gNodes.selectAll('.node-g')
+    .data(nodes, d => d.id)
+    .join(enter => {
+      const g = enter.append('g').attr('class', 'node-g');
+      g.append('circle').attr('class', 'node-circle');
+      g.append('text').attr('class', 'node-inner');
+      g.append('text').attr('class', 'node-outer');
+      return g;
+    })
+    .call(d3.drag()
+      .on('start', (ev, d) => { if (!ev.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag',  (ev, d) => { d.fx = ev.x; d.fy = ev.y; })
+      .on('end',   (ev, d) => { if (!ev.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+  nodeSel.select('.node-circle')
+    .attr('r', d => nodeRadius(d)).attr('fill', d => nodeColor(d)).attr('stroke', 'none')
+    .attr('cursor', 'grab')
+    .on('mouseover', showTooltip).on('mousemove', moveTooltip).on('mouseout', hideTooltip);
+
+  nodeSel.select('.node-inner')
+    .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
+    .attr('font-size', 8).attr('font-weight', '700').attr('font-family', 'Segoe UI, sans-serif')
+    .attr('fill', 'rgba(255,255,255,0.85)').attr('pointer-events', 'none')
+    .text(d => initials(d));
+
+  nodeSel.select('.node-outer')
+    .attr('text-anchor', 'middle').attr('font-size', 9)
+    .attr('font-family', 'Segoe UI, sans-serif').attr('fill', '#8b949e')
+    .attr('pointer-events', 'none').text(d => d.properties.name || d.labels[0]);
+
+  simulation.on('tick', () => {
+    linkSel.each(function(d) {
+      const sx=d.source.x, sy=d.source.y, tx=d.target.x, ty=d.target.y;
+      const dx=tx-sx, dy=ty-sy, dist=Math.sqrt(dx*dx+dy*dy)||1;
+      const sr=nodeRadius(d.source)+1, tr=nodeRadius(d.target)+6;
+      d3.select(this)
+        .attr('x1', sx+dx/dist*sr).attr('y1', sy+dy/dist*sr)
+        .attr('x2', tx-dx/dist*tr).attr('y2', ty-dy/dist*tr);
+    });
+    linkLblSel
+      .attr('x', d => (d.source.x+d.target.x)/2)
+      .attr('y', d => (d.source.y+d.target.y)/2 - 4);
+    nodeSel.attr('transform', d => `translate(${d.x},${d.y})`);
+    nodeSel.select('.node-outer').attr('y', d => nodeRadius(d)+12);
+  });
+
+  simulation.on('end', fitView);
+  hideLoading();
+}
+
+// ════════════════════════════════════════════════════════
+// TOOLTIP
+// ════════════════════════════════════════════════════════
+const tipEl = document.getElementById('tooltip');
+function showTooltip(event, d) {
+  const rows = Object.entries(d.properties).map(([k,v]) =>
+    `<div class="tt-row"><span class="tt-key">${esc(k)}:</span><span class="tt-val">${esc(v)}</span></div>`).join('');
+  tipEl.innerHTML = `<div class="tt-label">${esc(d.labels.join(' : '))}</div>${rows}`;
+  tipEl.classList.add('vis');
+  moveTooltip(event);
+}
+function moveTooltip(event) { tipEl.style.left=(event.clientX+14)+'px'; tipEl.style.top=(event.clientY-10)+'px'; }
+function hideTooltip() { tipEl.classList.remove('vis'); }
+
+// ════════════════════════════════════════════════════════
+// FIT VIEW
+// ════════════════════════════════════════════════════════
+function fitView() {
+  const cp = document.getElementById('center-pane');
+  const w = cp.clientWidth, h = cp.clientHeight;
+  const box = gMain.node().getBBox();
+  if (!box.width || !box.height) return;
+  const scale = Math.min((w-60)/box.width, (h-60)/box.height, 2);
+  const tx = (w - scale*box.width)/2  - scale*box.x;
+  const ty = (h - scale*box.height)/2 - scale*box.y;
+  svgSel.transition().duration(600).call(zoomBhv.transform, d3.zoomIdentity.translate(tx,ty).scale(scale));
+}
+
+// ════════════════════════════════════════════════════════
+// PANE RESIZE (DIVIDERS)
+// ════════════════════════════════════════════════════════
+function initDividers() {
+  makeDragH('div-lc', 'left-pane',   'left');
+  makeDragH('div-cr', 'right-pane',  'right');
+  makeDragH('div-qr', 'query-area',  'left');
+  makeDragV('div-tb', 'bottom-pane');
+}
+
+function makeDragH(divId, paneId, side) {
+  const div  = document.getElementById(divId);
+  const pane = document.getElementById(paneId);
+  let x0, w0;
+  div.addEventListener('mousedown', e => {
+    x0 = e.clientX; w0 = pane.offsetWidth;
+    div.classList.add('drag');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    const move = e => {
+      const dx = e.clientX - x0;
+      const nw = side === 'left' ? w0 + dx : w0 - dx;
+      const min = parseInt(getComputedStyle(pane).minWidth) || 100;
+      pane.style.width = Math.max(min, nw) + 'px';
+      onResize();
+    };
+    const up = () => {
+      div.classList.remove('drag');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    e.preventDefault();
+  });
+}
+
+function makeDragV(divId, paneId) {
+  const div  = document.getElementById(divId);
+  const pane = document.getElementById(paneId);
+  let y0, h0;
+  div.addEventListener('mousedown', e => {
+    y0 = e.clientY; h0 = pane.offsetHeight;
+    div.classList.add('drag');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    const move = e => {
+      const dy = e.clientY - y0;
+      const nh = h0 - dy;
+      const min = parseInt(getComputedStyle(pane).minHeight) || 80;
+      pane.style.height = Math.max(min, nh) + 'px';
+      onResize();
+    };
+    const up = () => {
+      div.classList.remove('drag');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    e.preventDefault();
+  });
+}
+
+function onResize() {
+  if (!simulation) return;
+  const cp = document.getElementById('center-pane');
+  simulation.force('center', d3.forceCenter(cp.clientWidth/2, cp.clientHeight/2));
+  simulation.alpha(0.05).restart();
+}
+
+// ════════════════════════════════════════════════════════
+// REL LABELS TOGGLE
+// ════════════════════════════════════════════════════════
+function toggleRelLabels() {
+  relLabelsOn = !relLabelsOn;
+  gLinkLabels.style('display', relLabelsOn ? null : 'none');
+  const btn = document.getElementById('btn-rel-labels');
+  btn.textContent = relLabelsOn ? 'LABELS ON' : 'LABELS OFF';
+  btn.style.color        = relLabelsOn ? '#8b949e' : '#484f58';
+  btn.style.borderColor  = relLabelsOn ? '#30363d' : '#21262d';
+}
+
+// ════════════════════════════════════════════════════════
+// QUERY
+// ════════════════════════════════════════════════════════
+async function runQuery() {
+  const cypher = document.getElementById('cypher-input').value.trim().replace(/;+$/, '');
+  if (!cypher) return;
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true; btn.textContent = '⏳…';
+  const body  = document.getElementById('results-body-wrap');
+  const count = document.getElementById('results-count');
+  body.innerHTML = ''; count.textContent = '';
+  const session = driver.session();
+  try {
+    const result  = await session.run(cypher);
+    const records = result.records;
+    count.textContent = `${records.length} row${records.length!==1?'s':''}`;
+    if (records.length === 0) {
+      body.innerHTML = '<div class="placeholder-msg">Query returned no rows.</div>';
+      clearGraphHighlight();
+    } else {
+      renderTable(records, body);
+      highlightFromRecords(records);
+    }
+    if (/\b(CREATE|MERGE|SET|DELETE|REMOVE|DETACH)\b/i.test(cypher)) {
+      await refreshGraph();
+    }
+  } catch (err) {
+    body.innerHTML = `<div class="error-msg">${esc(err.message)}</div>`;
+    clearGraphHighlight();
+  } finally {
+    await session.close();
+    btn.disabled = false; btn.textContent = '▶ Run';
+  }
+}
+
+// ════════════════════════════════════════════════════════
+// RESULTS TABLE
+// ════════════════════════════════════════════════════════
+function renderTable(records, container) {
+  const keys  = records[0].keys;
+  const table = document.createElement('table');
+  table.className = 'results-table';
+  const thead = table.createTHead(), hr = thead.insertRow();
+  keys.forEach(k => { const th=document.createElement('th'); th.textContent=k; hr.appendChild(th); });
+  const tbody = table.createTBody();
+  records.forEach(rec => {
+    const tr = tbody.insertRow();
+    keys.forEach(k => renderCell(tr.insertCell(), rec.get(k)));
+  });
+  container.appendChild(table);
+}
+
+function renderCell(td, val) {
+  if (val===null||val===undefined) { td.textContent='null'; td.className='cell-null'; }
+  else if (isNode(val)) {
+    td.textContent=`(${val.labels.join('|')}) ${val.properties.name||'id:'+toId(val.identity)}`;
+    td.className='cell-node'; td.title=JSON.stringify(propsToPlain(val.properties),null,2);
+  } else if (isRel(val)) {
+    td.textContent=`[:${val.type}]`; td.className='cell-rel';
+    td.title=JSON.stringify(propsToPlain(val.properties),null,2);
+  } else if (typeof val==='boolean') { td.textContent=String(val); td.className='cell-bool'; }
+  else if (typeof val==='number'||typeof val==='bigint'||(neo4j.isInt&&neo4j.isInt(val))) {
+    td.textContent=toNum(val); td.className='cell-number';
+  } else if (typeof val==='string') { td.textContent=val; td.className='cell-string'; }
+  else { td.textContent=JSON.stringify(val); td.className='cell-other'; }
+}
+
+// ════════════════════════════════════════════════════════
+// HIGHLIGHT
+// ════════════════════════════════════════════════════════
+function highlightFromRecords(records) {
+  const hN=new Set(), hR=new Set();
+  records.forEach(rec => rec.keys.forEach(k => {
+    const v=rec.get(k); if (!v) return;
+    if (isNode(v)) hN.add(toId(v.identity));
+    else if (isRel(v)) { hR.add(toId(v.identity)); hN.add(toId(v.start)); hN.add(toId(v.end)); }
+  }));
+  if (!hN.size && !hR.size) { clearGraphHighlight(); return; }
+  gNodes.selectAll('.node-g').each(function(d) {
+    const hi=hN.has(d.id), g=d3.select(this);
+    g.select('.node-circle').attr('stroke',hi?'#58a6ff':'none').attr('stroke-width',hi?3:0).attr('fill-opacity',hi?1:0.1);
+    g.select('.node-inner').attr('opacity',hi?1:0.08);
+    g.select('.node-outer').attr('opacity',hi?1:0.06);
+  });
+  gLinks.selectAll('.lnk')
+    .attr('stroke',         d => hR.has(d.id)?'#58a6ff':relColor(d.type))
+    .attr('stroke-width',   d => hR.has(d.id)?2.5:1.8)
+    .attr('stroke-opacity', d => hR.has(d.id)?1:0.07)
+    .attr('marker-end',     d => hR.has(d.id)?'url(#arrow-highlight)':`url(#arrow-${markerKey(d.type)})`);
+  gLinkLabels.selectAll('.lnk-lbl')
+    .attr('opacity', d => hR.has(d.id)?1:0.04)
+    .attr('fill',    d => hR.has(d.id)?'#58a6ff':relColor(d.type));
+}
+
+function clearGraphHighlight() {
+  gNodes.selectAll('.node-g').each(function() {
+    const g=d3.select(this);
+    g.select('.node-circle').attr('stroke','none').attr('stroke-width',0).attr('fill-opacity',1);
+    g.select('.node-inner').attr('opacity',1);
+    g.select('.node-outer').attr('opacity',1);
+  });
+  gLinks.selectAll('.lnk')
+    .attr('stroke',         d => relColor(d.type)).attr('stroke-width',1.8)
+    .attr('stroke-opacity', 0.6).attr('marker-end', d => `url(#arrow-${markerKey(d.type)})`);
+  gLinkLabels.selectAll('.lnk-lbl').attr('opacity',0.75).attr('fill', d => relColor(d.type));
+}
+
+function resetHighlight() {
+  clearGraphHighlight();
+  document.getElementById('results-body-wrap').innerHTML =
+    '<div class="placeholder-msg">Run a Cypher query to see results.<br>Returned nodes / relationships will be highlighted on the graph.</div>';
+  document.getElementById('results-count').textContent = '';
+}
+
+// ════════════════════════════════════════════════════════
+// RENDER CHALLENGES
+// ════════════════════════════════════════════════════════
+function renderChallenges() {
+  const container = document.getElementById('ch-groups-container');
+  container.innerHTML = '';
+
+  GROUPS.forEach((group, gi) => {
+    const unlocked = isGroupUnlocked(gi);
+    const solved   = group.indices.filter(i => solvedSet.has(i)).length;
+    const total    = group.indices.length;
+    const done     = solved === total;
+
+    const groupEl = document.createElement('div');
+    groupEl.className = 'ch-group';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'ch-group-hdr' + (unlocked ? '' : ' locked');
+    hdr.innerHTML =
+      `<span class="ch-group-arrow${unlocked ? ' open' : ''}">▶</span>` +
+      `<span class="ch-group-name">${esc(group.name)}</span>` +
+      `<span class="ch-group-badge${done?' done':''}">${solved}/${total}</span>` +
+      (unlocked ? '' : '<span class="ch-group-lock">🔒</span>');
+
+    const body = document.createElement('div');
+    body.className = 'ch-group-body' + (unlocked ? ' open' : '');
+
+    if (!unlocked) {
+      const prevGroup = GROUPS[gi - 1];
+      body.innerHTML = `<div class="ch-lock-msg">Complete "${esc(prevGroup.name)}" to unlock.</div>`;
+    } else {
+      group.indices.forEach(i => {
+        const ch   = CHALLENGES[i];
+        const item = document.createElement('div');
+        item.className = 'ch-item' + (solvedSet.has(i) ? ' solved' : '') + (activeChalIdx === i ? ' active' : '');
+        item.dataset.idx = i;
+        const short = ch.exercise.length > 52 ? ch.exercise.slice(0, 50) + '…' : ch.exercise;
+        item.innerHTML = `<div class="ch-dot"></div><span>${esc(short)}</span>`;
+        item.addEventListener('click', () => selectChallenge(i));
+        body.appendChild(item);
+
+        if (activeChalIdx === i) body.appendChild(buildDetailEl(i));
+      });
+    }
+
+    hdr.addEventListener('click', () => {
+      if (!unlocked) return;
+      body.classList.toggle('open');
+      hdr.querySelector('.ch-group-arrow').classList.toggle('open');
+    });
+
+    groupEl.appendChild(hdr);
+    groupEl.appendChild(body);
+    container.appendChild(groupEl);
+  });
+
+  updateProgressBar();
+}
+
+function updateProgressBar() {
+  const total  = CHALLENGES.length;
+  const solved = solvedSet.size;
+  document.getElementById('lp-fill').style.width = total ? (solved/total*100)+'%' : '0%';
+  document.getElementById('lp-progress-text').textContent = `${solved} / ${total} solved`;
+}
+
+// ════════════════════════════════════════════════════════
+// CHALLENGE INTERACTION
+// ════════════════════════════════════════════════════════
+function selectChallenge(idx) {
+  if (activeChalIdx === idx) {
+    activeChalIdx = -1;
+    renderChallenges();
+    return;
+  }
+  activeChalIdx = idx;
+  renderChallenges();
+  // Scroll detail into view
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`.ch-item[data-idx="${idx}"]`);
+    if (el && el.nextSibling) el.nextSibling.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+}
+
+function buildDetailEl(idx) {
+  const ch     = CHALLENGES[idx];
+  const hints  = hintCounts[idx] || 0;
+  const solved = solvedSet.has(idx);
+
+  const el = document.createElement('div');
+  el.className = 'ch-detail';
+  el.dataset.idx = idx;
+  el.innerHTML =
+    `<div class="ch-ex-text">${esc(ch.exercise)}${ch.type==='write'?'<span class="ch-write-badge">WRITE</span>':''}${solved?'<span class="ch-solved-tag">✓ Solved</span>':''}</div>` +
+    `<div class="ch-expected">Expected: ${esc(ch.expected)}</div>` +
+    `<div class="ch-actions">` +
+      `<button class="ch-btn ch-btn-hint"  id="hint-btn-${idx}">${hintLabel(ch,hints)}</button>` +
+      `<button class="ch-btn ch-btn-check" id="check-btn-${idx}">✓ Check</button>` +
+    `</div>` +
+    `<div id="hint-area-${idx}" class="ch-hint-area">${renderHints(ch,hints)}</div>` +
+    `<div id="check-result-${idx}" class="ch-result"></div>`;
+
+  el.querySelector(`#hint-btn-${idx}`).addEventListener('click',  e => { e.stopPropagation(); revealHint(idx); });
+  el.querySelector(`#check-btn-${idx}`).addEventListener('click', e => { e.stopPropagation(); checkAnswer(idx); });
+  return el;
+}
+
+function hintLabel(ch, count) {
+  if (count === 0)             return '💡 Show Hint';
+  if (count < ch.hints.length) return `💡 Next Hint (${count}/${ch.hints.length})`;
+  return '📋 Show Solution';
+}
+
+function renderHints(ch, count) {
+  return ch.hints.slice(0, count).map((h, i) =>
+    `<div class="ch-hint-box"><div class="ch-hint-num">Hint ${i+1}</div>${esc(h)}</div>`).join('');
+}
+
+function revealHint(idx) {
+  const ch = CHALLENGES[idx];
+  if (!hintCounts[idx]) hintCounts[idx] = 0;
+  if (hintCounts[idx] < ch.hints.length) {
+    hintCounts[idx]++;
+    const area = document.getElementById(`hint-area-${idx}`);
+    if (area) area.innerHTML = renderHints(ch, hintCounts[idx]);
+  } else {
+    document.getElementById('cypher-input').value = ch.query;
+  }
+  const btn = document.getElementById(`hint-btn-${idx}`);
+  if (btn) btn.textContent = hintLabel(ch, hintCounts[idx]);
+}
+
+// ════════════════════════════════════════════════════════
+// CHECK ANSWER
+// ════════════════════════════════════════════════════════
+async function checkAnswer(idx) {
+  const ch        = CHALLENGES[idx];
+  const userQuery = document.getElementById('cypher-input').value.trim().replace(/;+$/, '');
+  const resultEl  = document.getElementById(`check-result-${idx}`);
+  const checkBtn  = document.getElementById(`check-btn-${idx}`);
+
+  if (!userQuery) { resultEl.innerHTML='<div class="ch-err">Write your query in the editor first.</div>'; return; }
+
+  checkBtn.disabled = true; checkBtn.textContent = '⏳…';
+  resultEl.innerHTML = '';
+
+  let r1records, r2records;
+
+  try {
+    if (ch.type === 'write') {
+      // cleanup → user query → verify; changes persist after successful check
+      const s = driver.session();
+      try {
+        await s.run(ch.cleanup);
+        await s.run(userQuery);
+        r1records = (await s.run(ch.verify)).records;
+      } finally {
+        await s.close();
+      }
+      await refreshGraph();
+    } else {
+      // Read challenge: run both in parallel on separate sessions
+      const s1 = driver.session({ defaultAccessMode: neo4j.session.READ });
+      const s2 = driver.session({ defaultAccessMode: neo4j.session.READ });
+      try {
+        const [r1, r2] = await Promise.all([s1.run(userQuery), s2.run(ch.query)]);
+        r1records = r1.records; r2records = r2.records;
+      } finally {
+        await Promise.all([s1.close(), s2.close()]);
+      }
+    }
+
+    // Update results panel with the user's output (or verify output for write)
+    const body  = document.getElementById('results-body-wrap');
+    const count = document.getElementById('results-count');
+    body.innerHTML = '';
+    count.textContent = `${r1records.length} row${r1records.length!==1?'s':''}`;
+    if (r1records.length > 0) { renderTable(r1records, body); highlightFromRecords(r1records); }
+    else clearGraphHighlight();
+
+    const n1 = normalizeRecords(r1records);
+    const isCorrect = ch.type === 'write'
+      ? n1 === ch.expectedNormalized
+      : n1 === normalizeRecords(r2records);
+
+    if (isCorrect) {
+      solvedSet.add(idx);
+      resultEl.innerHTML = `<div class="ch-ok">✓ Correct! (${r1records.length} rows)</div>`;
+      if (solvedSet.size === CHALLENGES.length) setTimeout(launchFireworks, 600);
+      renderChallenges();
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`check-result-${idx}`);
+        if (el) el.innerHTML = `<div class="ch-ok">✓ Correct! (${r1records.length} rows)</div>`;
+      });
+    } else {
+      const info = ch.type === 'write'
+        ? `<div class="ch-info">Got ${r1records.length} row${r1records.length!==1?'s':''}.</div>`
+        : `<div class="ch-info">Verification: ${r1records.length} row${r1records.length!==1?'s':''} · Expected: ${r2records.length} row${r2records.length!==1?'s':''}</div>`;
+      resultEl.innerHTML = `<div class="ch-err">✗ Not quite.</div>${info}`;
+    }
+  } catch (err) {
+    resultEl.innerHTML = `<div class="ch-err">Error: ${esc(err.message)}</div>`;
+    clearGraphHighlight();
+  } finally {
+    const btn = document.getElementById(`check-btn-${idx}`);
+    if (btn) { btn.disabled=false; btn.textContent='✓ Check'; }
+  }
+}
+
+// ════════════════════════════════════════════════════════
+// ANSWER COMPARISON
+// ════════════════════════════════════════════════════════
+function normalizeRecords(records) {
+  if (!records.length) return '[]';
+  return JSON.stringify(records.map(rec =>
+    rec.keys.map(k => serializeVal(rec.get(k))).sort()
+  ).sort());
+}
+
+function serializeVal(v) {
+  if (v==null) return 'null';
+  if (isNode(v)) return JSON.stringify({labels:[...v.labels].sort(),props:propsToPlain(v.properties)});
+  if (isRel(v))  return JSON.stringify({type:v.type,props:propsToPlain(v.properties)});
+  const n = toNum(v);
+  if (typeof n==='number') return parseFloat(n.toPrecision(9)).toString();
+  return String(n);
+}
+
+// ════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════
+// FIREWORKS
+// ════════════════════════════════════════════════════════
+function launchFireworks() {
+  const overlay  = document.getElementById('fw-overlay');
+  const canvas   = document.getElementById('fw-canvas');
+  const ctx      = canvas.getContext('2d');
+  const DURATION = 10000;
+  const COLORS   = ['#ffd700','#ff4757','#2ed573','#1e90ff','#ff6b81','#eccc68','#a29bfe','#fd79a8','#00cec9','#ff9f43'];
+
+  overlay.style.opacity = '1';
+  overlay.style.display = 'flex';
+
+  function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+  resize();
+  window.addEventListener('resize', resize);
+
+  let particles = [], rockets = [];
+  let elapsed = 0, lastT = performance.now(), animId, nextLaunch = 100, launches = 0;
+
+  function explode(x, y, color) {
+    const n = 55 + Math.random() * 35 | 0;
+    for (let i = 0; i < n; i++) {
+      const a = (Math.PI * 2 * i / n) + (Math.random() - 0.5) * 0.4;
+      const s = 1.8 + Math.random() * 3.5;
+      particles.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s, alpha: 1,
+        color, r: 1.2 + Math.random()*2, decay: 0.011 + Math.random()*0.012, g: 0.055 });
+    }
+    // Sparkle ring
+    for (let i = 0; i < 12; i++) {
+      const a = Math.PI * 2 * i / 12;
+      particles.push({ x, y, vx: Math.cos(a)*6, vy: Math.sin(a)*6, alpha: 0.9,
+        color: '#ffffff', r: 1, decay: 0.025, g: 0.03 });
+    }
+  }
+
+  function launch() {
+    const x = canvas.width * (0.12 + Math.random() * 0.76);
+    const ty = canvas.height * (0.08 + Math.random() * 0.38);
+    rockets.push({ x, y: canvas.height + 5, vy: -16 - Math.random()*9, ty,
+      color: COLORS[Math.random()*COLORS.length|0], trail: [] });
+  }
+
+  function frame(now) {
+    const dt = Math.min(now - lastT, 50); lastT = now; elapsed += dt;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Schedule launches
+    if (elapsed > nextLaunch && elapsed < DURATION - 1800 && launches < 32) {
+      launch();
+      if (launches < 3) launch(); // opening burst
+      nextLaunch = elapsed + 280 + Math.random() * 380;
+      launches++;
+    }
+
+    // Rockets
+    rockets = rockets.filter(r => {
+      r.y += r.vy; r.vy += 0.28;
+      r.trail.push({ x: r.x, y: r.y });
+      if (r.trail.length > 7) r.trail.shift();
+      r.trail.forEach((p, i) => {
+        ctx.beginPath(); ctx.arc(p.x, p.y, 1.2, 0, Math.PI*2);
+        ctx.fillStyle = `rgba(255,200,80,${0.5 * i / r.trail.length})`; ctx.fill();
+      });
+      ctx.beginPath(); ctx.arc(r.x, r.y, 2.2, 0, Math.PI*2);
+      ctx.fillStyle = r.color; ctx.fill();
+      if (r.y <= r.ty || r.vy >= 0) { explode(r.x, r.y, r.color); return false; }
+      return true;
+    });
+
+    // Particles
+    particles = particles.filter(p => {
+      p.x += p.vx; p.y += p.vy; p.vy += p.g; p.vx *= 0.97; p.alpha -= p.decay;
+      if (p.alpha <= 0) return false;
+      const hex = Math.round(p.alpha * 255).toString(16).padStart(2, '0');
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fillStyle = p.color + hex; ctx.fill();
+      return true;
+    });
+
+    const rem = DURATION - elapsed;
+    if (rem < 2000) overlay.style.opacity = Math.max(0, rem / 2000).toFixed(3);
+
+    if (elapsed < DURATION) { animId = requestAnimationFrame(frame); }
+    else end();
+  }
+
+  function end() {
+    cancelAnimationFrame(animId);
+    window.removeEventListener('resize', resize);
+    overlay.style.opacity = '0';
+    setTimeout(() => { overlay.style.display = 'none'; ctx.clearRect(0,0,canvas.width,canvas.height); }, 500);
+  }
+
+  document.getElementById('fw-skip').addEventListener('click', end, { once: true });
+  animId = requestAnimationFrame(frame);
+}
+
+// ════════════════════════════════════════════════════════
+// DUMP SCHEMA
+// ════════════════════════════════════════════════════════
+async function dumpSchema() {
+  const body  = document.getElementById('results-body-wrap');
+  const count = document.getElementById('results-count');
+  body.innerHTML = '<div class="placeholder-msg">Loading schema…</div>';
+  count.textContent = '';
+  const s = driver.session({ defaultAccessMode: neo4j.session.READ });
+  try {
+    const nr = await s.run(
+      'MATCH (n) WITH labels(n) AS lbls UNWIND lbls AS lbl RETURN lbl AS label, count(*) AS cnt ORDER BY cnt DESC'
+    );
+    const rr = await s.run(
+      'MATCH ()-[r]->() RETURN type(r) AS type, count(*) AS cnt ORDER BY cnt DESC'
+    );
+    const nodeRows = nr.records.map(r =>
+      `<div style="font-size:11px;margin-bottom:3px;"><span style="color:#58a6ff">${esc(r.get('label'))}</span>: <span style="color:#e3b341">${toNum(r.get('cnt'))}</span></div>`
+    ).join('');
+    const relRows = rr.records.map(r =>
+      `<div style="font-size:11px;margin-bottom:3px;"><span style="color:#56d364">${esc(r.get('type'))}</span>: <span style="color:#e3b341">${toNum(r.get('cnt'))}</span></div>`
+    ).join('');
+    body.innerHTML =
+      `<div style="padding:10px 14px;">` +
+        `<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:#484f58;margin-bottom:7px;">Node Labels</div>` +
+        nodeRows +
+        `<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:#484f58;margin:10px 0 7px;">Relationship Types</div>` +
+        relRows +
+      `</div>`;
+    count.textContent = 'Schema';
+  } finally {
+    await s.close();
+  }
+}
+
+// ════════════════════════════════════════════════════════
+// RESET DB
+// ════════════════════════════════════════════════════════
+async function resetDB() {
+  if (!confirm('Reset the database to its initial state?\n\nThis will DELETE ALL data and re-seed from init.cypher.')) return;
+  const body  = document.getElementById('results-body-wrap');
+  const count = document.getElementById('results-count');
+  body.innerHTML = '<div class="placeholder-msg">Resetting database…</div>';
+  count.textContent = '';
+  setLoading('Resetting database…');
+  const s = driver.session();
+  try {
+    await s.run('MATCH (n) DETACH DELETE n');
+    await s.run(INIT_CYPHER);
+  } finally {
+    await s.close();
+  }
+  await refreshGraph();
+  body.innerHTML = '<div class="placeholder-msg">Database reset to initial state.</div>';
+  count.textContent = '';
+}
+
+// ════════════════════════════════════════════════════════
+// SECRET SEQUENCE  (fit, out, out, fit, out, in, fit — within 2 s)
+// ════════════════════════════════════════════════════════
+const SECRET_SEQ = ['fit','out','out','fit','out','in','fit'];
+let _sBuf = [], _sTimer = null;
+
+function trackSecret(key) {
+  if (!_sTimer) {
+    _sTimer = setTimeout(() => { _sBuf = []; _sTimer = null; }, 2000);
+  }
+  _sBuf.push(key);
+  if (_sBuf.join(',') === SECRET_SEQ.join(',')) {
+    clearTimeout(_sTimer); _sTimer = null; _sBuf = [];
+    openAnswersTab();
+  } else if (_sBuf.length >= SECRET_SEQ.length) {
+    clearTimeout(_sTimer); _sTimer = null; _sBuf = [];
+  }
+}
+
+function openAnswersTab() {
+  const rows = CHALLENGES.map((ch, i) => {
+    const badge = ch.type === 'write'
+      ? `<span style="font-size:9px;font-weight:700;background:#2d1b00;color:#e3b341;border:1px solid #7d4e00;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle;">WRITE</span>`
+      : '';
+    return `<tr>
+      <td style="color:#484f58;text-align:center;">${i + 1}</td>
+      <td style="color:#8b949e;">${esc(ch.group)}</td>
+      <td style="color:#e6edf3;">${esc(ch.exercise)}${badge}</td>
+      <td><code style="font-family:'Cascadia Code',Consolas,monospace;font-size:11px;color:#7ee787;white-space:pre-wrap;word-break:break-all;">${esc(ch.query)}</code></td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Neo4j Challenge Answers</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;font-size:13px;padding:28px 32px;}
+h1{font-size:1.4rem;font-weight:800;color:#e6edf3;margin-bottom:6px;}
+p{font-size:11px;color:#484f58;margin-bottom:22px;}
+table{width:100%;border-collapse:collapse;}
+th{background:#161b22;color:#388bfd;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;padding:8px 12px;text-align:left;border-bottom:2px solid #21262d;position:sticky;top:0;z-index:1;}
+td{padding:8px 12px;border-bottom:1px solid #161b22;vertical-align:top;line-height:1.5;}
+tr:hover td{background:#161b22;}
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px;}
+</style>
+</head>
+<body>
+<h1>🔓 Challenge Answers</h1>
+<p>You found the secret. Don't spoil it for others.</p>
+<table>
+  <thead><tr>
+    <th style="width:36px;">#</th>
+    <th style="width:160px;">Group</th>
+    <th style="width:38%;">Exercise</th>
+    <th>Answer</th>
+  </tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: 'text/html' });
+  const url  = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+}
+
+// LOADING HELPERS
+// ════════════════════════════════════════════════════════
+function setLoading(msg) {
+  const el = document.getElementById('loading');
+  el.classList.remove('hidden');
+  document.getElementById('loading-msg').textContent = msg;
+}
+function hideLoading() { document.getElementById('loading').classList.add('hidden'); }
+</script>
+</body>
+</html>

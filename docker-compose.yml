@@ -1,0 +1,31 @@
+services:
+  neo4j:
+    build: .
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  neo4j-init:
+    image: neo4j:5.19
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - ./init.cypher:/init.cypher
+    command: >
+      bash -c "cypher-shell -a bolt://neo4j:7687 -u neo4j -p password
+      'MATCH (n) RETURN count(n) AS c' | grep -q '^0$'
+      && cypher-shell -a bolt://neo4j:7687 -u neo4j -p password -f /init.cypher
+      || echo 'DB already seeded, skipping.'"
+    restart: "no"
+
+volumes:
+  neo4j_data:
