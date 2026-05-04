@@ -578,6 +578,45 @@ const CHALLENGES = [
     expectedNormalized:'[["null"]]' },
 ];
 
+const BONUS_CHALLENGES = [
+  { group:'Quick Start',
+    exercise:'Find all Event nodes.',
+    expected:'3 rows · e',
+    hints:['Use MATCH (e:Event) to match all Event nodes.','MATCH (e:Event) RETURN e'],
+    query:'MATCH (e:Event) RETURN e' },
+  { group:'Quick Start',
+    exercise:'Find people aged exactly 38. Return their names.',
+    expected:'2 rows · p.name',
+    hints:['Use WHERE p.age = 38.','MATCH (p:Person) WHERE p.age = 38 RETURN p.name ORDER BY p.name'],
+    query:'MATCH (p:Person) WHERE p.age = 38 RETURN p.name ORDER BY p.name' },
+  { group:'Quick Start',
+    exercise:'Who are rivals of someone? Return both names.',
+    expected:'1 row · a.name, b.name',
+    hints:['Use the RIVAL_OF relationship.','MATCH (a:Person)-[:RIVAL_OF]->(b:Person) RETURN a.name, b.name'],
+    query:'MATCH (a:Person)-[:RIVAL_OF]->(b:Person) RETURN a.name, b.name' },
+  { group:'Quick Start',
+    exercise:'What is the youngest age in the office?',
+    expected:'1 row · min_age',
+    hints:['Use the min() aggregation function.','MATCH (p:Person) RETURN min(p.age) AS min_age'],
+    query:'MATCH (p:Person) RETURN min(p.age) AS min_age' },
+  { group:'Quick Start',
+    exercise:'Find managers who are friends with someone they manage. Return both names.',
+    expected:'2 rows · a.name, b.name',
+    hints:["Match MANAGES then check FRIENDS_WITH on the same pair.","MATCH (a:Person)-[:MANAGES]->(b:Person) WHERE (a)-[:FRIENDS_WITH]->(b) RETURN a.name, b.name ORDER BY b.name"],
+    query:"MATCH (a:Person)-[:MANAGES]->(b:Person) WHERE (a)-[:FRIENDS_WITH]->(b) RETURN a.name, b.name ORDER BY b.name" },
+  { group:'Quick Start', type:'write',
+    exercise:"Add a 'seniority' property set to 'Senior' on Stanley Hudson.",
+    expected:"1 row · s.seniority = 'Senior'",
+    hints:[
+      "Use MATCH to find Stanley, then SET the new property.",
+      "MATCH (s:Person {name:'Stanley Hudson'}) SET s.seniority = 'Senior'",
+    ],
+    query:"MATCH (s:Person {name:'Stanley Hudson'}) SET s.seniority = 'Senior'",
+    verify:"MATCH (s:Person {name:'Stanley Hudson'}) RETURN s.seniority",
+    cleanup:"MATCH (s:Person {name:'Stanley Hudson'}) REMOVE s.seniority",
+    expectedNormalized:'[["Senior"]]' },
+];
+
 // ════════════════════════════════════════════════════════
 // CHALLENGE GROUPS (precomputed)
 // ════════════════════════════════════════════════════════
@@ -607,6 +646,7 @@ let relLabelsOn  = true;
 let activeChalIdx = -1;
 let hintCounts    = {};
 let solvedSet     = new Set();
+let bonusUnlocked = false;
 
 // ════════════════════════════════════════════════════════
 // BOOT
@@ -1479,13 +1519,13 @@ async function resetDB() {
 // ════════════════════════════════════════════════════════
 // SECRET SEQUENCE  (fit, out, out, fit, out, in, fit — within 2 s)
 // ════════════════════════════════════════════════════════
-const SECRET_SEQ = ['fit','out','out','fit','out','in','fit'];
+const SECRET_SEQ  = ['fit','out','out','fit','out','in','fit'];
+const SECRET_SEQ2 = ['fit','in','in','in','in','in','fit'];
 let _sBuf = [], _sTimer = null;
+let _sBuf2 = [], _sTimer2 = null;
 
 function trackSecret(key) {
-  if (!_sTimer) {
-    _sTimer = setTimeout(() => { _sBuf = []; _sTimer = null; }, 2000);
-  }
+  if (!_sTimer) _sTimer = setTimeout(() => { _sBuf = []; _sTimer = null; }, 2000);
   _sBuf.push(key);
   if (_sBuf.join(',') === SECRET_SEQ.join(',')) {
     clearTimeout(_sTimer); _sTimer = null; _sBuf = [];
@@ -1493,6 +1533,51 @@ function trackSecret(key) {
   } else if (_sBuf.length >= SECRET_SEQ.length) {
     clearTimeout(_sTimer); _sTimer = null; _sBuf = [];
   }
+
+  if (!_sTimer2) _sTimer2 = setTimeout(() => { _sBuf2 = []; _sTimer2 = null; }, 5000);
+  _sBuf2.push(key);
+  if (_sBuf2.join(',') === SECRET_SEQ2.join(',')) {
+    clearTimeout(_sTimer2); _sTimer2 = null; _sBuf2 = [];
+    unlockBonusChapter();
+  } else if (_sBuf2.length >= SECRET_SEQ2.length) {
+    clearTimeout(_sTimer2); _sTimer2 = null; _sBuf2 = [];
+  }
+}
+
+function unlockBonusChapter() {
+  if (bonusUnlocked) return;
+  bonusUnlocked = true;
+
+  const n = BONUS_CHALLENGES.length;
+  CHALLENGES.unshift(...BONUS_CHALLENGES);
+
+  solvedSet = new Set([...solvedSet].map(i => i + n));
+
+  const shifted = {};
+  for (const [k, v] of Object.entries(hintCounts)) shifted[+k + n] = v;
+  hintCounts = shifted;
+
+  if (activeChalIdx >= 0) activeChalIdx += n;
+
+  const newOrder = [...new Set(CHALLENGES.map(c => c.group))];
+  GROUP_ORDER.length = 0;
+  newOrder.forEach(g => GROUP_ORDER.push(g));
+  GROUPS.length = 0;
+  newOrder.forEach(name => GROUPS.push({
+    name,
+    indices: CHALLENGES.flatMap((c, i) => c.group === name ? [i] : []),
+  }));
+
+  renderChallenges();
+  showBonusToast();
+}
+
+function showBonusToast() {
+  const t = document.createElement('div');
+  t.textContent = '🔓 Quick Start chapter unlocked!';
+  t.style.cssText = 'position:fixed;bottom:56px;left:50%;transform:translateX(-50%);background:#0d2112;border:1px solid #1a4425;color:#3fb950;padding:8px 18px;border-radius:8px;font-size:12px;font-weight:600;z-index:500;pointer-events:none;transition:opacity 0.5s;';
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 500); }, 2500);
 }
 
 function openAnswersTab() {
